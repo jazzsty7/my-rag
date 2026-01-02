@@ -66,50 +66,119 @@ def parse_toc(pages: List[Document]) -> dict:
     toc = {}
     for page in pages[:5]:
         for line in page.page_content.splitlines():
+            # st.write(f"#### line: {line}")
             m = re.search(r"(제\s*\d+조).*?(\d+)$", line.strip())
             if m:
                 toc[m.group(1).replace(" ", "")] = int(m.group(2))
     return toc
 
-# =================================================
-# 조항 파싱
-# =================================================
+# # =================================================
+# # 조항 파싱
+# # =================================================
+# def parse_articles(pages: List[Document]) -> List[Document]:
+#     docs = []
+#     buffer = ""
+#     current_article = None
+#     start_page = None
+
+#     for page in pages:
+#         page_no = page.metadata.get("page", 0) + 1
+#         for line in page.page_content.splitlines():
+#             # 조항 시작 감지
+#             if ARTICLE_START_RE.match(line):
+#                 # 이전 조항 저장
+#                 if current_article:
+#                     #st.write(f"ARTICLE_START_RE.Article: {current_article}, page_content: {buffer.strip()}")
+#                     docs.append(Document(
+#                         page_content=buffer.strip(),
+#                         metadata={
+#                             "article": current_article,
+#                             "start_page": start_page,
+#                             #"end_page": page_no - 1  # 이전 페이지까지 범위
+#                             "end_page": page_no  # 이전 페이지까지 범위
+#                         }
+#                     ))
+#                 current_article = line.strip()
+#                 start_page = page_no
+#                 buffer = line
+#                 continue
+
+#             # STOP_RE 감지: 조항 종료
+#             if current_article and STOP_RE.match(line):
+#                 st.write(f"STOP_RE.Article: {current_article}, line: {line.strip()}")
+#                 docs.append(Document(
+#                     page_content=buffer.strip(),
+#                     metadata={
+#                         "article": current_article,
+#                         "start_page": start_page,
+#                         "end_page": page_no
+#                     }
+#                 ))
+#                 current_article = None
+#                 start_page = None
+#                 buffer = ""
+#                 continue
+
+#             # st.write(f"####### 222222222 line: {line.strip()}")
+
+#             # 조항 내용 누적
+#             if current_article:
+#                 buffer += "\n" + line
+
+#     # 마지막 조항 처리 (문서 끝까지)
+#     if current_article and buffer.strip():
+#         st.write("Final article detected, saving...")
+#         #st.write(f"Article: {current_article}, page_content: {buffer.strip()}")
+#         docs.append(Document(
+#             page_content=buffer.strip(),
+#             metadata={
+#                 "article": current_article,
+#                 "start_page": start_page,
+#                 "end_page": page_no  # 마지막 페이지까지
+#             }
+#         ))
+
+#     return docs
+
 def parse_articles(pages: List[Document]) -> List[Document]:
     docs = []
     buffer = ""
     current_article = None
-    current_page = None
+    start_page = None
+    last_content_page = None
 
     for page in pages:
         page_no = page.metadata.get("page", 0) + 1
+
         for line in page.page_content.splitlines():
             if ARTICLE_START_RE.match(line):
                 if current_article:
                     docs.append(Document(
                         page_content=buffer.strip(),
-                        metadata={"article": current_article, "page": current_page}
+                        metadata={
+                            "article": current_article,
+                            "start_page": start_page,
+                            "end_page": last_content_page
+                        }
                     ))
                 current_article = line.strip()
-                current_page = page_no
+                start_page = page_no
                 buffer = line
-                continue
-
-            if current_article and STOP_RE.match(line):
-                docs.append(Document(
-                    page_content=buffer.strip(),
-                    metadata={"article": current_article, "page": current_page}
-                ))
-                current_article = None
-                buffer = ""
+                last_content_page = page_no
                 continue
 
             if current_article:
                 buffer += "\n" + line
+                last_content_page = page_no  # ★ 핵심
 
     if current_article and buffer.strip():
         docs.append(Document(
             page_content=buffer.strip(),
-            metadata={"article": current_article, "page": current_page}
+            metadata={
+                "article": current_article,
+                "start_page": start_page,
+                "end_page": last_content_page
+            }
         ))
 
     return docs
@@ -157,7 +226,7 @@ def build_db(docs: List[Document], version: str) -> Chroma:
 # 사이드바
 # =================================================
 st.sidebar.header("⚙ 설정")
-VERSION = st.sidebar.selectbox("약관 버전 선택", ["2024-01", "2025-01"])
+VERSION = st.sidebar.selectbox("약관 버전 선택", ["2025-01", "2024-01"])
 
 # =================================================
 # 메인
@@ -168,6 +237,9 @@ if uploaded_file:
     pages = load_pdf(uploaded_file)
     toc_map = parse_toc(pages)
     docs = parse_articles(pages)
+
+    st.write(f"### 총 {len(docs)}개의 조항이 파싱되었습니다.")
+    st.write(f"### docs: {docs}")
 
     for d in docs:
         d.page_content = clean_article_text(d.page_content)
@@ -193,9 +265,6 @@ if uploaded_file:
     if st.button("질문하기"):
         st.session_state.show_answer = True
 
-    if st.button("📄 선택 조항 원문 보기"):
-        st.session_state.show_original = True
-
     # =================================================
     # 질문 결과
     # =================================================
@@ -219,6 +288,9 @@ if uploaded_file:
         )
         rag_chain.invoke(question)
 
+    if st.button("📄 선택 조항 원문 보기"):
+        st.session_state.show_original = True
+
     # =================================================
     # 원문 보기
     # =================================================
@@ -226,11 +298,22 @@ if uploaded_file:
         st.divider()
         for d in docs:
             if d.metadata["article"] == selected_article:
-                page = d.metadata["page"]
-                st.markdown(f"## {selected_article} (p.{page})")
-                st.link_button(
-                    "PDF 해당 페이지로 이동",
-                    f"file:///{uploaded_file.name}#page={page}",
-                )
+
+                #st.write(d.metadata)
+
+                start = d.metadata["start_page"]
+                end = d.metadata["end_page"]
+                article = d.metadata["article"]
+                st.markdown(f"## {article} (p.{start}~p.{end})")
+
+                # page = d.metadata["page"]
+                # st.markdown(f"## {selected_article} (p.{page})")
+                # st.link_button(
+                #     "PDF 해당 페이지로 이동",
+                #     f"file:///{uploaded_file.name}#page={page}",
+                # )
+
+                #st.write(f"## d.page_content: {d.page_content}")
+
                 render_original_text(d.page_content)
                 break
